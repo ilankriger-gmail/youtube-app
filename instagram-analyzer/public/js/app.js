@@ -27,6 +27,11 @@ const App = {
       this.applyFilters();
     });
 
+    // Filtro de período - aplica automaticamente
+    document.getElementById('filter-period').addEventListener('change', () => {
+      this.applyFilters();
+    });
+
     // Selecao
     document.getElementById('btn-top5').addEventListener('click', () => {
       Selection.selectTop(this.filteredVideos, 5);
