@@ -28,7 +28,9 @@ function runPythonScript(args) {
     });
 
     python.stderr.on('data', (data) => {
-      stderr += data.toString();
+      const msg = data.toString();
+      stderr += msg;
+      console.log(`[Python] ${msg.trim()}`);
     });
 
     python.on('close', (code) => {
@@ -88,7 +90,7 @@ router.post('/refresh', async (req, res) => {
   try {
     console.log(`[Refresh] Atualizando videos de @${FIXED_USERNAME}...`);
 
-    const result = await runPythonScript([FIXED_USERNAME, 'all', '1000']);
+    const result = await runPythonScript([FIXED_USERNAME, 'all', '200']);
 
     if (result.error) {
       console.log(`[Refresh] Erro: ${result.error}`);
