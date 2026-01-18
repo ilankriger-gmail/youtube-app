@@ -1,13 +1,14 @@
 // ========== SECAO: PAGINA DE LOGIN ==========
 
 import { useState, type FormEvent } from 'react';
-import { Youtube, Lock, Mail, AlertCircle } from 'lucide-react';
+import { Youtube, Lock, Mail, AlertCircle, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
 export function LoginPage() {
   const { login } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
@@ -81,11 +82,11 @@ export function LoginPage() {
                 </div>
                 <input
                   id="password"
-                  type="password"
+                  type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   className="
-                    w-full pl-10 pr-4 py-3
+                    w-full pl-10 pr-12 py-3
                     bg-dark-800 border border-dark-600 rounded-xl
                     text-dark-100 placeholder-dark-500
                     focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent
@@ -95,6 +96,17 @@ export function LoginPage() {
                   required
                   disabled={isLoading}
                 />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-dark-500 hover:text-dark-300 transition-colors"
+                >
+                  {showPassword ? (
+                    <EyeOff className="w-5 h-5" />
+                  ) : (
+                    <Eye className="w-5 h-5" />
+                  )}
+                </button>
               </div>
             </div>
 
