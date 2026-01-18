@@ -9,7 +9,6 @@ import type {
   YouTubeVideosResponse,
 } from '../types';
 import {
-  YOUTUBE_API_BASE_URL,
   YOUTUBE_ENDPOINTS,
   CHANNEL_HANDLE,
   API_CONFIG,
