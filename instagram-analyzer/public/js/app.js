@@ -140,7 +140,6 @@ const App = {
   applyFilters() {
     Filters.updateFromInputs();
     this.filteredVideos = Filters.apply(this.videos);
-    Selection.clear();
     this.renderVideos();
     this.updateUI();
   },
@@ -209,7 +208,7 @@ const App = {
    * Inicia downloads
    */
   startDownload() {
-    const selectedVideos = Selection.getSelectedVideos(this.filteredVideos);
+    const selectedVideos = Selection.getSelectedVideos(this.videos);
 
     if (selectedVideos.length === 0) {
       alert('Selecione pelo menos um video');
