@@ -43,6 +43,9 @@ const Download = {
       }
     }
 
+    // Aguardar conclusao do ultimo item
+    await this.delay(500);
+
     this.isRunning = false;
     this.updateProgress();
   },
