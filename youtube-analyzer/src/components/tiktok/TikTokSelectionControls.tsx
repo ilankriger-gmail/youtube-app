@@ -1,6 +1,6 @@
 // ========== COMPONENTE: CONTROLES DE SELECAO TIKTOK ==========
 
-import { TrendingUp, TrendingDown, CheckSquare, XSquare, Download } from 'lucide-react';
+import { TrendingUp, TrendingDown, CheckSquare, XSquare, Download, FileSpreadsheet } from 'lucide-react';
 import { useTikTok } from '../../contexts';
 import type { TikTokQuality } from '../../services/tiktok.service';
 
@@ -16,6 +16,7 @@ export function TikTokSelectionControls() {
     setQuality,
     startBatchDownload,
     isDownloading,
+    exportCSV,
   } = useTikTok();
 
   const selectedCount = selectedIds.size;
@@ -77,8 +78,18 @@ export function TikTokSelectionControls() {
           </button>
         </div>
 
-        {/* Qualidade */}
+        {/* Qualidade e Acoes */}
         <div className="lg:ml-auto flex items-center gap-3">
+          {/* Botao Exportar CSV */}
+          <button
+            onClick={exportCSV}
+            disabled={totalCount === 0}
+            className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white font-medium rounded hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            <FileSpreadsheet className="w-4 h-4" />
+            CSV ({totalCount})
+          </button>
+
           <select
             value={quality}
             onChange={(e) => setQuality(e.target.value as TikTokQuality)}

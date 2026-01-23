@@ -13,6 +13,7 @@ import {
   fetchTikTokVideosFromDB,
   syncTikTokVideos,
   downloadTikTokWithProgress,
+  generateTikTokCSV,
   TIKTOK_FIXED_USERNAME,
   type TikTokVideo,
   type TikTokQuality,
@@ -79,6 +80,9 @@ interface TikTokContextType {
   closeModal: () => void;
   completedCount: number;
   failedCount: number;
+
+  // Export CSV
+  exportCSV: () => void;
 }
 
 // ========== CONTEXT ==========
@@ -389,6 +393,13 @@ export function TikTokProvider({ children }: TikTokProviderProps) {
     setDownloadQueue([]);
   }, []);
 
+  // ========== EXPORT CSV ==========
+
+  const exportCSV = useCallback(() => {
+    if (filteredVideos.length === 0) return;
+    generateTikTokCSV(filteredVideos, username);
+  }, [filteredVideos, username]);
+
   // ========== VALUE ==========
 
   const value: TikTokContextType = {
@@ -421,6 +432,7 @@ export function TikTokProvider({ children }: TikTokProviderProps) {
     closeModal,
     completedCount,
     failedCount,
+    exportCSV,
   };
 
   return (

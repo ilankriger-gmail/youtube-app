@@ -11,6 +11,7 @@ import {
 import {
   fetchTikTokProfile,
   downloadTikTokWithProgress,
+  generateTikTokCSV,
   type TikTokVideo,
   type TikTokQuality,
 } from '../services/tiktok.service';
@@ -76,6 +77,9 @@ interface TikTokCreatorsContextType {
   closeModal: () => void;
   completedCount: number;
   failedCount: number;
+
+  // Export CSV
+  exportCSV: () => void;
 }
 
 // ========== CONTEXT ==========
@@ -359,6 +363,14 @@ export function TikTokCreatorsProvider({ children }: TikTokCreatorsProviderProps
     setDownloadQueue([]);
   }, []);
 
+  // ========== EXPORT CSV ==========
+
+  const exportCSV = useCallback(() => {
+    if (filteredVideos.length === 0) return;
+    const creatorUsername = profile?.username || username || 'unknown';
+    generateTikTokCSV(filteredVideos, creatorUsername);
+  }, [filteredVideos, profile, username]);
+
   // ========== VALUE ==========
 
   const value: TikTokCreatorsContextType = {
@@ -391,6 +403,7 @@ export function TikTokCreatorsProvider({ children }: TikTokCreatorsProviderProps
     closeModal,
     completedCount,
     failedCount,
+    exportCSV,
   };
 
   return (

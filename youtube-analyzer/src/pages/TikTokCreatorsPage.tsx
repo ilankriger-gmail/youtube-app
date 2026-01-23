@@ -20,6 +20,7 @@ import {
   CheckCircle,
   XCircle,
   User,
+  FileSpreadsheet,
 } from 'lucide-react';
 import {
   TikTokCreatorsProvider,
@@ -252,6 +253,7 @@ function CreatorsSelectionControls() {
     setQuality,
     startBatchDownload,
     isDownloading,
+    exportCSV,
   } = useTikTokCreators();
 
   const selectedCount = selectedIds.size;
@@ -308,6 +310,16 @@ function CreatorsSelectionControls() {
         </div>
 
         <div className="lg:ml-auto flex items-center gap-3">
+          {/* Botao Exportar CSV */}
+          <button
+            onClick={exportCSV}
+            disabled={totalCount === 0}
+            className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white font-medium rounded hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            <FileSpreadsheet className="w-4 h-4" />
+            CSV ({totalCount})
+          </button>
+
           <select
             value={quality}
             onChange={(e) => setQuality(e.target.value as TikTokQuality)}

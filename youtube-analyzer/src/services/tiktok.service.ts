@@ -296,3 +296,67 @@ export function parseDuration(str: string): number {
 export function getTikTokUrl(videoId: string, username: string): string {
   return `https://www.tiktok.com/@${username}/video/${videoId}`;
 }
+
+// ========== EXPORTAR CSV ==========
+
+function escapeCSVValue(value: string | number): string {
+  const str = String(value);
+  if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
+export function generateTikTokCSV(videos: TikTokVideo[], username: string): void {
+  // Headers
+  const headers = [
+    'Titulo',
+    'Views',
+    'Views Formatado',
+    'Duracao (s)',
+    'Duracao Formatada',
+    'Data Publicacao',
+    'Canal',
+    'URL',
+    'ID'
+  ];
+
+  // Rows
+  const rows = videos.map(video => [
+    escapeCSVValue(video.title),
+    video.views,
+    formatViews(video.views),
+    video.duration,
+    formatDuration(video.duration),
+    formatTikTokDate(video.uploadDate),
+    escapeCSVValue(video.channel),
+    video.url,
+    video.id
+  ]);
+
+  // Monta CSV
+  const csvContent = [
+    headers.join(','),
+    ...rows.map(row => row.map(cell => escapeCSVValue(cell)).join(','))
+  ].join('\n');
+
+  // Adiciona BOM para UTF-8 (Excel abre corretamente)
+  const BOM = '\uFEFF';
+  const blob = new Blob([BOM + csvContent], { type: 'text/csv;charset=utf-8;' });
+
+  // Gera nome do arquivo com timestamp e username
+  const timestamp = new Date().toISOString().slice(0, 10);
+  const filename = `tiktok_${username}_${timestamp}.csv`;
+
+  // Dispara download
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.style.display = 'none';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
