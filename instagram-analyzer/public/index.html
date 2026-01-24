@@ -112,11 +112,21 @@
           <option value="480">480p</option>
           <option value="audio">Apenas audio (MP3)</option>
         </select>
+        <label class="checkbox-label">
+          <input type="checkbox" id="include-comments">
+          <span>Incluir comentarios</span>
+        </label>
       </div>
-      <button class="btn btn-primary btn-download" id="btn-download">
-        <span class="btn-icon">⬇️</span>
-        Baixar <span id="download-count">0</span> videos
-      </button>
+      <div class="download-buttons">
+        <button class="btn btn-primary btn-download" id="btn-download">
+          <span class="btn-icon">⬇️</span>
+          Baixar <span id="download-count">0</span> videos
+        </button>
+        <button class="btn btn-secondary btn-comments" id="btn-download-comments">
+          <span class="btn-icon">💬</span>
+          Baixar Comentarios
+        </button>
+      </div>
     </div>
 
     <!-- Modal de Download -->

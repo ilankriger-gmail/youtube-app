@@ -112,3 +112,17 @@ function generateFilename(video) {
 
   return `IG - ${viewsFormatted} - ${title}.mp4`;
 }
+
+/**
+ * Busca comentarios de um post
+ */
+async function fetchComments(shortcode, limit = 500) {
+  const response = await fetch(`${API_BASE}/comments/${shortcode}?limit=${limit}`);
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Erro ao buscar comentarios');
+  }
+
+  return response.json();
+}

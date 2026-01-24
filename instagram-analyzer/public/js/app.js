@@ -69,6 +69,11 @@ const App = {
       this.startDownload();
     });
 
+    // Download apenas comentarios
+    document.getElementById('btn-download-comments').addEventListener('click', () => {
+      this.startCommentsDownload();
+    });
+
     // Modal
     document.getElementById('modal-close').addEventListener('click', () => {
       Download.hideModal();
@@ -220,6 +225,20 @@ const App = {
   },
 
   /**
+   * Inicia download apenas de comentarios
+   */
+  startCommentsDownload() {
+    const selectedVideos = Selection.getSelectedVideos(this.videos);
+
+    if (selectedVideos.length === 0) {
+      alert('Selecione pelo menos um video');
+      return;
+    }
+
+    Download.startCommentsOnly(selectedVideos);
+  },
+
+  /**
    * Atualiza UI geral
    */
   updateUI() {
@@ -246,7 +265,9 @@ const App = {
     document.getElementById('download-count').textContent = count;
 
     const downloadBtn = document.getElementById('btn-download');
+    const commentsBtn = document.getElementById('btn-download-comments');
     downloadBtn.disabled = count === 0;
+    commentsBtn.disabled = count === 0;
   },
 
   /**

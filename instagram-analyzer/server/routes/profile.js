@@ -132,6 +132,79 @@ router.get('/profile/:username', async (req, res) => {
 });
 
 /**
+ * POST /api/profile/:username
+ * Busca videos de qualquer usuario do Instagram (para Instagram Criadores)
+ */
+router.post('/profile/:username', async (req, res) => {
+  try {
+    const { username } = req.params;
+    const limit = req.body.limit || 100;
+
+    if (!username) {
+      return res.status(400).json({
+        success: false,
+        error: 'Username e obrigatorio'
+      });
+    }
+
+    const cleanUsername = username.replace('@', '').trim();
+    console.log(`[Profile] Buscando videos de @${cleanUsername}...`);
+
+    const result = await runPythonScript([cleanUsername, 'all', limit.toString()]);
+
+    if (result.error) {
+      console.log(`[Profile] Erro: ${result.error}`);
+      return res.status(400).json({
+        success: false,
+        error: result.error,
+        username: cleanUsername
+      });
+    }
+
+    // Transforma para formato compativel com frontend React
+    const videos = (result.videos || []).map(v => ({
+      id: v.shortcode,
+      shortcode: v.shortcode,
+      url: v.url,
+      title: v.caption || 'Sem titulo',
+      channel: result.username || cleanUsername,
+      duration: v.duration || 0,
+      views: v.views || 0,
+      likes: v.likes || 0,
+      comments: v.comments || 0,
+      thumbnail: v.thumbnail,
+      uploadDate: v.timestamp ? v.timestamp.slice(0, 10).replace(/-/g, '') : '',
+      type: v.type || 'post',
+      videoUrl: v.video_url,
+      platform: 'instagram'
+    }));
+
+    console.log(`[Profile] Encontrados ${videos.length} videos de @${cleanUsername}`);
+
+    res.json({
+      success: true,
+      profile: {
+        username: result.username || cleanUsername,
+        fullName: result.full_name || '',
+        profilePic: result.profile_pic || '',
+        followers: result.followers || 0,
+        videoCount: videos.length
+      },
+      videos,
+      fetchedAt: result.fetched_at || new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('[Profile] Erro:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro ao buscar perfil',
+      details: error.message
+    });
+  }
+});
+
+/**
  * POST /api/validate-urls
  * Valida uma lista de URLs do Instagram
  */
@@ -199,6 +272,72 @@ router.post('/validate-urls', async (req, res) => {
     console.error('[Validate] Erro:', error);
     res.status(500).json({
       error: 'Erro ao validar URLs',
+      details: error.message,
+    });
+  }
+});
+
+/**
+ * GET /api/comments/:shortcode
+ * Busca comentarios de um post especifico
+ */
+router.get('/comments/:shortcode', async (req, res) => {
+  const { shortcode } = req.params;
+  const limit = parseInt(req.query.limit) || 500;
+
+  console.log(`[Comments] Buscando comentarios de ${shortcode}...`);
+
+  try {
+    const scriptPath = path.join(__dirname, '../scripts/fetch_comments.py');
+    const venvPython = path.join(__dirname, '../../venv/bin/python3');
+
+    const result = await new Promise((resolve, reject) => {
+      const python = spawn(venvPython, [scriptPath, shortcode, limit.toString()]);
+
+      let stdout = '';
+      let stderr = '';
+
+      python.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      python.stderr.on('data', (data) => {
+        const msg = data.toString();
+        stderr += msg;
+        console.log(`[Python] ${msg.trim()}`);
+      });
+
+      python.on('close', (code) => {
+        if (code !== 0) {
+          reject(new Error(stderr || `Python exited with code ${code}`));
+          return;
+        }
+
+        try {
+          const result = JSON.parse(stdout);
+          resolve(result);
+        } catch (e) {
+          reject(new Error(`Failed to parse Python output: ${stdout}`));
+        }
+      });
+
+      python.on('error', (err) => {
+        reject(err);
+      });
+    });
+
+    if (result.error) {
+      console.log(`[Comments] Erro: ${result.error}`);
+      return res.status(400).json(result);
+    }
+
+    console.log(`[Comments] ${result.fetched_comments} comentarios encontrados`);
+    res.json(result);
+
+  } catch (error) {
+    console.error('[Comments] Erro:', error);
+    res.status(500).json({
+      error: 'Erro ao buscar comentarios',
       details: error.message,
     });
   }
