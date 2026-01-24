@@ -209,30 +209,78 @@ router.post('/validate-urls', async (req, res) => {
  * Proxy para imagens do Instagram (evita CORS e URLs expiradas)
  */
 router.get('/proxy-image', async (req, res) => {
-  const { url } = req.query;
+  const { url, shortcode } = req.query;
 
-  if (!url) {
-    return res.status(400).json({ error: 'URL required' });
+  if (!url && !shortcode) {
+    return res.status(400).json({ error: 'URL or shortcode required' });
+  }
+
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+    'Referer': 'https://www.instagram.com/',
+  };
+
+  // Tenta buscar a imagem da URL original
+  async function tryFetch(imageUrl) {
+    const response = await fetch(imageUrl, { headers });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    return response;
   }
 
   try {
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
-        'Referer': 'https://www.instagram.com/',
-      }
-    });
+    let response;
+    let succeeded = false;
 
-    if (!response.ok) {
-      return res.status(response.status).json({ error: 'Failed to fetch image' });
+    // 1. Tenta URL original primeiro (se fornecida)
+    if (url) {
+      try {
+        response = await tryFetch(url);
+        succeeded = true;
+      } catch (e) {
+        console.log(`[Proxy] URL original falhou: ${e.message}`);
+      }
+    }
+
+    // 2. Se falhou e temos shortcode, tenta URL alternativa do Instagram
+    if (!succeeded && shortcode) {
+      try {
+        // Tenta buscar a página do Instagram e extrair a thumbnail
+        const instaUrl = `https://www.instagram.com/p/${shortcode}/media/?size=l`;
+        response = await tryFetch(instaUrl);
+        succeeded = true;
+        console.log(`[Proxy] Fallback funcionou para ${shortcode}`);
+      } catch (e) {
+        console.log(`[Proxy] Fallback também falhou: ${e.message}`);
+      }
+    }
+
+    // 3. Se ainda não conseguiu e temos URL, extrai shortcode dela e tenta
+    if (!succeeded && url && !shortcode) {
+      const match = url.match(/instagram\.com\/p\/([A-Za-z0-9_-]+)/);
+      if (match) {
+        try {
+          const instaUrl = `https://www.instagram.com/p/${match[1]}/media/?size=l`;
+          response = await tryFetch(instaUrl);
+          succeeded = true;
+          console.log(`[Proxy] Fallback extraído funcionou para ${match[1]}`);
+        } catch (e) {
+          console.log(`[Proxy] Fallback extraído também falhou: ${e.message}`);
+        }
+      }
+    }
+
+    if (!succeeded) {
+      return res.status(404).json({ error: 'Image not available' });
     }
 
     const buffer = Buffer.from(await response.arrayBuffer());
     const contentType = response.headers.get('content-type') || 'image/jpeg';
 
     res.set('Content-Type', contentType);
-    res.set('Cache-Control', 'public, max-age=86400');
+    res.set('Cache-Control', 'public, max-age=3600'); // Reduzido para 1 hora
     res.send(buffer);
 
   } catch (error) {
