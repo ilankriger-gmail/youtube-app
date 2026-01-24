@@ -360,21 +360,63 @@ router.get('/proxy-image', async (req, res) => {
     'Referer': 'https://www.instagram.com/',
   };
 
-  // Tenta buscar a imagem da URL original
+  // Tenta buscar a imagem da URL
   async function tryFetch(imageUrl) {
-    const response = await fetch(imageUrl, { headers });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+
+    try {
+      const response = await fetch(imageUrl, {
+        headers,
+        signal: controller.signal,
+        redirect: 'follow'
+      });
+      clearTimeout(timeout);
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return response;
+    } catch (e) {
+      clearTimeout(timeout);
+      throw e;
     }
-    return response;
+  }
+
+  // Extrai shortcode de uma URL do Instagram
+  function extractShortcode(imageUrl) {
+    if (!imageUrl) return null;
+    const match = imageUrl.match(/instagram\.com\/p\/([A-Za-z0-9_-]+)/);
+    return match ? match[1] : null;
+  }
+
+  // Verifica se URL do CDN parece expirada (contém tokens de autenticação)
+  function isExpiredCdnUrl(imageUrl) {
+    if (!imageUrl) return true;
+    // URLs do Instagram CDN tem parâmetros como _nc_ht, _nc_cat, etc que expiram
+    return imageUrl.includes('cdninstagram.com') ||
+           imageUrl.includes('fbcdn.net') ||
+           imageUrl.includes('_nc_');
   }
 
   try {
     let response;
     let succeeded = false;
+    const effectiveShortcode = shortcode || extractShortcode(url);
 
-    // 1. Tenta URL original primeiro (se fornecida)
-    if (url) {
+    // 1. Se temos shortcode, SEMPRE tenta o endpoint /media/ primeiro (mais estável)
+    if (effectiveShortcode) {
+      try {
+        const instaUrl = `https://www.instagram.com/p/${effectiveShortcode}/media/?size=l`;
+        response = await tryFetch(instaUrl);
+        succeeded = true;
+      } catch (e) {
+        console.log(`[Proxy] /media/ endpoint falhou para ${effectiveShortcode}: ${e.message}`);
+      }
+    }
+
+    // 2. Se /media/ falhou e temos URL original (e não parece expirada), tenta ela
+    if (!succeeded && url && !isExpiredCdnUrl(url)) {
       try {
         response = await tryFetch(url);
         succeeded = true;
@@ -383,31 +425,13 @@ router.get('/proxy-image', async (req, res) => {
       }
     }
 
-    // 2. Se falhou e temos shortcode, tenta URL alternativa do Instagram
-    if (!succeeded && shortcode) {
+    // 3. Se ainda não conseguiu e URL parece ser do CDN, tenta mesmo assim como último recurso
+    if (!succeeded && url) {
       try {
-        // Tenta buscar a página do Instagram e extrair a thumbnail
-        const instaUrl = `https://www.instagram.com/p/${shortcode}/media/?size=l`;
-        response = await tryFetch(instaUrl);
+        response = await tryFetch(url);
         succeeded = true;
-        console.log(`[Proxy] Fallback funcionou para ${shortcode}`);
       } catch (e) {
-        console.log(`[Proxy] Fallback também falhou: ${e.message}`);
-      }
-    }
-
-    // 3. Se ainda não conseguiu e temos URL, extrai shortcode dela e tenta
-    if (!succeeded && url && !shortcode) {
-      const match = url.match(/instagram\.com\/p\/([A-Za-z0-9_-]+)/);
-      if (match) {
-        try {
-          const instaUrl = `https://www.instagram.com/p/${match[1]}/media/?size=l`;
-          response = await tryFetch(instaUrl);
-          succeeded = true;
-          console.log(`[Proxy] Fallback extraído funcionou para ${match[1]}`);
-        } catch (e) {
-          console.log(`[Proxy] Fallback extraído também falhou: ${e.message}`);
-        }
+        console.log(`[Proxy] URL CDN falhou: ${e.message}`);
       }
     }
 
@@ -419,7 +443,7 @@ router.get('/proxy-image', async (req, res) => {
     const contentType = response.headers.get('content-type') || 'image/jpeg';
 
     res.set('Content-Type', contentType);
-    res.set('Cache-Control', 'public, max-age=3600'); // Reduzido para 1 hora
+    res.set('Cache-Control', 'public, max-age=300'); // 5 minutos de cache
     res.send(buffer);
 
   } catch (error) {
