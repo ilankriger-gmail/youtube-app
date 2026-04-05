@@ -1,7 +1,11 @@
 // ========== SECAO: SERVICO INSTAGRAM ==========
 
-// Instagram Analyzer roda na porta 3002
-export const INSTAGRAM_API_URL = 'http://localhost:3002';
+// Instagram Analyzer - usa Railway em producao, localhost em dev
+export const INSTAGRAM_API_URL =
+  import.meta.env.VITE_INSTAGRAM_API_URL ||
+  (import.meta.env.PROD
+    ? 'https://instagram-analyzer-production-f8bf.up.railway.app'
+    : 'http://localhost:3002');
 
 // ========== TIPOS ==========
 
@@ -223,6 +227,42 @@ export function parseDuration(str: string): number {
   return parseInt(str) || 0;
 }
 
+// ========== COMENTARIOS ==========
+
+export interface InstagramComment {
+  id: string;
+  author: string;
+  author_verified: boolean;
+  text: string;
+  likes: number;
+  timestamp: string;
+  answers_count: number;
+}
+
+export interface CommentsResult {
+  shortcode: string;
+  total_comments: number;
+  fetched_comments: number;
+  comments: InstagramComment[];
+  error?: string;
+}
+
+export async function fetchInstagramComments(
+  shortcode: string,
+  limit: number = 500
+): Promise<CommentsResult> {
+  const response = await fetch(
+    `${INSTAGRAM_API_URL}/api/comments/${shortcode}?limit=${limit}`
+  );
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: 'Erro desconhecido' }));
+    throw new Error(error.error || `Erro HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
 // ========== EXPORTAR CSV ==========
 
 function escapeCSVValue(value: string | number): string {
@@ -276,6 +316,70 @@ export function generateInstagramCSV(videos: InstagramVideo[], username: string)
 
   const timestamp = new Date().toISOString().slice(0, 10);
   const filename = `instagram_${username}_${timestamp}.csv`;
+
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.style.display = 'none';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ========== EXPORTAR COMENTARIOS CSV ==========
+
+export interface CommentWithVideo extends InstagramComment {
+  videoShortcode: string;
+  videoTitle: string;
+  videoUrl: string;
+}
+
+export function generateCommentsCSV(comments: CommentWithVideo[], username: string): void {
+  const headers = [
+    'Video Shortcode',
+    'Video Titulo',
+    'Video URL',
+    'Comentario ID',
+    'Autor',
+    'Autor Verificado',
+    'Texto',
+    'Likes',
+    'Data',
+    'Respostas'
+  ];
+
+  const formatDateCSV = (timestamp: string): string => {
+    if (!timestamp) return '';
+    const date = new Date(timestamp);
+    return date.toLocaleDateString('pt-BR') + ' ' + date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const rows = comments.map(comment => [
+    escapeCSVValue(comment.videoShortcode),
+    escapeCSVValue(comment.videoTitle),
+    escapeCSVValue(comment.videoUrl),
+    escapeCSVValue(comment.id),
+    escapeCSVValue(comment.author),
+    comment.author_verified ? 'Sim' : 'Nao',
+    escapeCSVValue(comment.text),
+    escapeCSVValue(comment.likes),
+    escapeCSVValue(formatDateCSV(comment.timestamp)),
+    escapeCSVValue(comment.answers_count)
+  ]);
+
+  const csvContent = [
+    headers.join(','),
+    ...rows.map(row => row.join(','))
+  ].join('\n');
+
+  const BOM = '\uFEFF';
+  const blob = new Blob([BOM + csvContent], { type: 'text/csv;charset=utf-8;' });
+
+  const timestamp = new Date().toISOString().slice(0, 10);
+  const filename = `instagram_comentarios_${username}_${timestamp}.csv`;
 
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "social-media-data": {
+      "command": "node",
+      "args": ["/Users/macbookair/Desktop/Dev/Youtube App/mcp-server/dist/index.js"],
+      "env": {
+        "YOUTUBE_BACKEND_URL": "http://localhost:3001",
+        "INSTAGRAM_BACKEND_URL": "http://localhost:3002"
+      }
+    }
+  }
+}

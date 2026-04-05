@@ -12,8 +12,11 @@ import {
   fetchInstagramProfile,
   downloadInstagramWithProgress,
   generateInstagramCSV,
+  fetchInstagramComments,
+  generateCommentsCSV,
   type InstagramVideo,
   type InstagramQuality,
+  type CommentWithVideo,
 } from '../services/instagram.service';
 
 // ========== TIPOS ==========
@@ -80,6 +83,11 @@ interface InstagramCreatorsContextType {
 
   // Export CSV
   exportCSV: () => void;
+
+  // Comentarios
+  isDownloadingComments: boolean;
+  commentsProgress: { current: number; total: number; videoTitle: string };
+  startCommentsDownload: () => Promise<void>;
 }
 
 // ========== CONTEXT ==========
@@ -124,6 +132,10 @@ export function InstagramCreatorsProvider({ children }: InstagramCreatorsProvide
   const [isDownloading, setIsDownloading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [downloadCancelled, setDownloadCancelled] = useState(false);
+
+  // Comentarios
+  const [isDownloadingComments, setIsDownloadingComments] = useState(false);
+  const [commentsProgress, setCommentsProgress] = useState({ current: 0, total: 0, videoTitle: '' });
 
   // ========== BUSCAR CRIADOR ==========
 
@@ -375,6 +387,60 @@ export function InstagramCreatorsProvider({ children }: InstagramCreatorsProvide
     generateInstagramCSV(filteredVideos, creatorUsername);
   }, [filteredVideos, profile, username]);
 
+  // ========== COMENTARIOS ==========
+
+  const startCommentsDownload = useCallback(async () => {
+    if (selectedIds.size === 0) {
+      alert('Selecione pelo menos um video');
+      return;
+    }
+
+    const selectedVideos = filteredVideos.filter(v => selectedIds.has(v.id));
+    const allComments: CommentWithVideo[] = [];
+
+    setIsDownloadingComments(true);
+    setCommentsProgress({ current: 0, total: selectedVideos.length, videoTitle: '' });
+
+    for (let i = 0; i < selectedVideos.length; i++) {
+      const video = selectedVideos[i];
+      setCommentsProgress({ current: i + 1, total: selectedVideos.length, videoTitle: video.title });
+
+      try {
+        const result = await fetchInstagramComments(video.shortcode, 500);
+
+        if (result.comments && result.comments.length > 0) {
+          result.comments.forEach(comment => {
+            allComments.push({
+              ...comment,
+              videoShortcode: video.shortcode,
+              videoTitle: video.title,
+              videoUrl: video.url,
+            });
+          });
+        }
+
+        console.log(`[Comments] ${result.fetched_comments || 0} comentarios de ${video.shortcode}`);
+      } catch (err) {
+        console.error(`[Comments] Erro ao buscar comentarios de ${video.shortcode}:`, err);
+      }
+
+      // Delay entre requisicoes para evitar rate limit
+      if (i < selectedVideos.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      }
+    }
+
+    setIsDownloadingComments(false);
+
+    if (allComments.length > 0) {
+      const creatorUsername = profile?.username || username || 'unknown';
+      generateCommentsCSV(allComments, creatorUsername);
+      alert(`${allComments.length} comentarios exportados com sucesso!`);
+    } else {
+      alert('Nenhum comentario encontrado nos videos selecionados.');
+    }
+  }, [selectedIds, filteredVideos, profile, username]);
+
   // ========== VALUE ==========
 
   const value: InstagramCreatorsContextType = {
@@ -408,6 +474,9 @@ export function InstagramCreatorsProvider({ children }: InstagramCreatorsProvide
     completedCount,
     failedCount,
     exportCSV,
+    isDownloadingComments,
+    commentsProgress,
+    startCommentsDownload,
   };
 
   return (

@@ -22,6 +22,7 @@ import {
   User,
   FileSpreadsheet,
   Heart,
+  MessageSquare,
 } from 'lucide-react';
 import {
   InstagramCreatorsProvider,
@@ -260,6 +261,9 @@ function CreatorsSelectionControls() {
     startBatchDownload,
     isDownloading,
     exportCSV,
+    isDownloadingComments,
+    commentsProgress,
+    startCommentsDownload,
   } = useInstagramCreators();
 
   const selectedCount = selectedIds.size;
@@ -315,7 +319,7 @@ function CreatorsSelectionControls() {
           </button>
         </div>
 
-        <div className="lg:ml-auto flex items-center gap-3">
+        <div className="lg:ml-auto flex flex-wrap items-center gap-3">
           {/* Botao Exportar CSV */}
           <button
             onClick={exportCSV}
@@ -324,6 +328,25 @@ function CreatorsSelectionControls() {
           >
             <FileSpreadsheet className="w-4 h-4" />
             CSV ({totalCount})
+          </button>
+
+          {/* Botao Baixar Comentarios */}
+          <button
+            onClick={startCommentsDownload}
+            disabled={selectedCount === 0 || isDownloadingComments}
+            className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white font-medium rounded hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {isDownloadingComments ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                {commentsProgress.current}/{commentsProgress.total}
+              </>
+            ) : (
+              <>
+                <MessageSquare className="w-4 h-4" />
+                Comentarios ({selectedCount})
+              </>
+            )}
           </button>
 
           <select
