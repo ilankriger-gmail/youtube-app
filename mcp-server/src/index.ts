@@ -1,529 +1,746 @@
 #!/usr/bin/env node
 
 // ========== MCP SERVER - SOCIAL MEDIA DATA ==========
-// Expoe dados de YouTube, TikTok e Instagram para outros clientes MCP
-// Transporte: stdio (compativel com Claude Desktop e Claude Code)
+// Exposes YouTube, TikTok, and Instagram video data via MCP (stdio transport)
+// Returns structured JSON with normalized videos, aggregates, and pagination
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { z } from "zod";
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { z } from 'zod';
+
+import type { BackendConfig, NormalizedVideo, PlatformSummary, ToolResponse } from './types.js';
+import { DEFAULTS } from './types.js';
+import {
+  fetchJSON,
+  fetchYouTubeChannel,
+  fetchAllYouTubeVideos,
+  fetchTikTokLive,
+  fetchTikTokDatabase,
+  fetchInstagramLive,
+  fetchInstagramDatabase,
+  fetchInstagramComments,
+  normalizeInstagramComment,
+  applyDateFilter,
+  sortVideos,
+  paginate,
+  computeAggregates,
+  computePerformanceSummary,
+  buildMeta,
+  buildErrorResponse,
+  toMcpResult,
+  formatVideoSummary,
+  formatProfileSummary,
+  formatNumber,
+  mapErrorCode,
+  mapErrorMessage,
+} from './helpers.js';
 
 // ========== CONFIG ==========
 
-const YOUTUBE_BACKEND = process.env.YOUTUBE_BACKEND_URL || "http://localhost:3001";
-const INSTAGRAM_BACKEND = process.env.INSTAGRAM_BACKEND_URL || "http://localhost:3002";
+const config: BackendConfig = {
+  youtubeBackend: process.env.YOUTUBE_BACKEND_URL || 'http://localhost:3001',
+  instagramBackend: process.env.INSTAGRAM_BACKEND_URL || 'http://localhost:3002',
+};
 
-// ========== HELPERS ==========
+// ========== SHARED ZOD SCHEMAS ==========
 
-async function fetchJSON(url: string, options?: RequestInit) {
-  const res = await fetch(url, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options?.headers,
-    },
-  });
+const dateFilterSchema = {
+  published_after: z.string().optional().describe('Filter: only videos published after this date (ISO, e.g. "2025-01-01")'),
+  published_before: z.string().optional().describe('Filter: only videos published before this date (ISO, e.g. "2025-12-31")'),
+  last_n_days: z.number().optional().describe('Filter: only videos from the last N days (overrides published_after)'),
+};
 
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`HTTP ${res.status}: ${body}`);
-  }
+const paginationSchema = {
+  page: z.number().default(1).describe('Page number (default 1)'),
+  page_size: z.number().default(50).describe('Results per page (default 50, max 200)'),
+};
 
-  return res.json();
-}
+const sortSchema = {
+  sort_by: z.enum(['views', 'likes', 'comments', 'date', 'duration']).default('date').describe('Sort field'),
+  sort_order: z.enum(['asc', 'desc']).default('desc').describe('Sort order'),
+};
 
-// Formata numero para exibicao (1.2M, 3.4K)
-function formatNumber(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return n.toString();
-}
-
-// Formata duracao em segundos para mm:ss
-function formatDuration(seconds: number): string {
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
+const sourceSchema = {
+  source: z.enum(['live', 'database']).default('live').describe("Data source: 'live' (fresh scraping) or 'database' (saved data)"),
+};
 
 // ========== SERVER ==========
 
 const server = new McpServer({
-  name: "social-media-data",
-  version: "1.0.0",
+  name: 'social-media-data',
+  version: '2.0.0',
 });
 
-// ========== YOUTUBE TOOLS ==========
+// ========== YOUTUBE: GET CHANNEL ==========
 
 server.tool(
-  "youtube_get_channel",
-  "Busca informacoes de um canal do YouTube pelo handle (@usuario). Retorna nome, descricao, inscritos, total de videos.",
+  'youtube_get_channel',
+  'Get YouTube channel info by handle. Returns structured profile data with subscriber count, video count, and total views.',
   {
-    handle: z.string().describe("Handle do canal (ex: @nextleveldj1)"),
+    handle: z.string().default(DEFAULTS.youtube_handle).describe('Channel handle (e.g. @nextleveldj1)'),
   },
   async ({ handle }) => {
-    const cleanHandle = handle.startsWith("@") ? handle : `@${handle}`;
+    try {
+      const { channel } = await fetchYouTubeChannel(config, handle);
+      const ch = channel;
 
-    // 1. Buscar canal
-    const channelData = await fetchJSON(
-      `${YOUTUBE_BACKEND}/api/youtube/channels?forHandle=${encodeURIComponent(cleanHandle)}&part=snippet,statistics,contentDetails`
-    );
-
-    if (!channelData.items?.length) {
-      return {
-        content: [{ type: "text", text: `Canal "${cleanHandle}" nao encontrado.` }],
+      const profile = {
+        id: ch.id,
+        name: ch.snippet.title,
+        handle,
+        description: ch.snippet.description?.substring(0, 500) || null,
+        thumbnail: ch.snippet.thumbnails?.default?.url || null,
+        subscribers: Number(ch.statistics.subscriberCount),
+        videoCount: Number(ch.statistics.videoCount),
+        totalViews: Number(ch.statistics.viewCount),
+        uploadsPlaylistId: ch.contentDetails.relatedPlaylists.uploads,
       };
+
+      const response: ToolResponse = {
+        data: { profile },
+        meta: buildMeta('youtube', 'live', 'ok'),
+        formatted_summary: formatProfileSummary(profile, 'YouTube'),
+      };
+
+      return toMcpResult(response);
+    } catch (err) {
+      return toMcpResult(buildErrorResponse('youtube', 'live', err));
     }
-
-    const ch = channelData.items[0];
-    const info = {
-      id: ch.id,
-      nome: ch.snippet.title,
-      descricao: ch.snippet.description?.substring(0, 300),
-      thumbnail: ch.snippet.thumbnails?.default?.url,
-      inscritos: Number(ch.statistics.subscriberCount),
-      totalVideos: Number(ch.statistics.videoCount),
-      visualizacoesTotais: Number(ch.statistics.viewCount),
-      uploadsPlaylistId: ch.contentDetails.relatedPlaylists.uploads,
-    };
-
-    return {
-      content: [
-        {
-          type: "text",
-          text: [
-            `📺 Canal: ${info.nome}`,
-            `ID: ${info.id}`,
-            `Inscritos: ${formatNumber(info.inscritos)}`,
-            `Videos: ${formatNumber(info.totalVideos)}`,
-            `Views totais: ${formatNumber(info.visualizacoesTotais)}`,
-            `Playlist de uploads: ${info.uploadsPlaylistId}`,
-            "",
-            `Descricao: ${info.descricao || "Sem descricao"}`,
-          ].join("\n"),
-        },
-      ],
-    };
-  }
+  },
 );
 
+// ========== YOUTUBE: GET VIDEOS ==========
+
 server.tool(
-  "youtube_get_videos",
-  "Busca todos os videos de um canal do YouTube. Retorna titulo, views, likes, comentarios, duracao, data de publicacao. Pode filtrar por shorts ou videos longos.",
+  'youtube_get_videos',
+  'Get all videos from a YouTube channel. Returns normalized videos with views, likes, comments, duration. Supports date filtering, sorting, and pagination.',
   {
-    handle: z.string().describe("Handle do canal (ex: @nextleveldj1)"),
-    type: z.enum(["all", "short", "long"]).default("all").describe("Filtrar por tipo: all, short (<=60s), long (>60s)"),
-    limit: z.number().default(0).describe("Limite de videos (0 = todos)"),
-    sort_by: z.enum(["views", "likes", "comments", "date", "duration"]).default("date").describe("Ordenar por"),
-    sort_order: z.enum(["asc", "desc"]).default("desc").describe("Ordem"),
+    handle: z.string().default(DEFAULTS.youtube_handle).describe('Channel handle (e.g. @nextleveldj1)'),
+    type: z.enum(['all', 'short', 'long']).default('all').describe('Filter by type: all, short (<=60s), long (>60s)'),
+    ...dateFilterSchema,
+    ...sortSchema,
+    ...paginationSchema,
   },
-  async ({ handle, type, limit, sort_by, sort_order }) => {
-    const cleanHandle = handle.startsWith("@") ? handle : `@${handle}`;
+  async ({ handle, type, published_after, published_before, last_n_days, sort_by, sort_order, page, page_size }) => {
+    try {
+      const { channel, playlistId } = await fetchYouTubeChannel(config, handle);
+      let videos = await fetchAllYouTubeVideos(config, playlistId, handle, type);
 
-    // 1. Buscar canal
-    const channelData = await fetchJSON(
-      `${YOUTUBE_BACKEND}/api/youtube/channels?forHandle=${encodeURIComponent(cleanHandle)}&part=snippet,statistics,contentDetails`
-    );
+      // Date filter
+      videos = applyDateFilter(videos, { published_after, published_before, last_n_days });
 
-    if (!channelData.items?.length) {
-      return {
-        content: [{ type: "text", text: `Canal "${cleanHandle}" nao encontrado.` }],
+      // Aggregates (before pagination)
+      const aggregates = computeAggregates(videos);
+
+      // Sort
+      videos = sortVideos(videos, sort_by, sort_order);
+
+      // Paginate
+      const { items, pagination } = paginate(videos, page, page_size);
+
+      const profile = {
+        id: channel.id,
+        name: channel.snippet.title,
+        handle,
+        subscribers: Number(channel.statistics.subscriberCount),
+        videoCount: Number(channel.statistics.videoCount),
+        totalViews: Number(channel.statistics.viewCount),
       };
+
+      const response: ToolResponse = {
+        data: { profile, videos: items, aggregates, pagination },
+        meta: buildMeta('youtube', 'live', 'ok'),
+        formatted_summary: formatVideoSummary(aggregates, items.length, `YouTube (${channel.snippet.title})`),
+      };
+
+      return toMcpResult(response);
+    } catch (err) {
+      return toMcpResult(buildErrorResponse('youtube', 'live', err));
     }
+  },
+);
 
-    const channel = channelData.items[0];
-    const playlistId = channel.contentDetails.relatedPlaylists.uploads;
+// ========== TIKTOK: GET PROFILE ==========
 
-    // 2. Buscar todos os video IDs da playlist
-    const videoIds: string[] = [];
-    let nextPageToken: string | undefined;
+server.tool(
+  'tiktok_get_profile',
+  'Fetch videos from a TikTok profile (live scraping or database). Returns normalized videos with views, duration, date. Supports date filtering, sorting, and pagination.',
+  {
+    username: z.string().default(DEFAULTS.tiktok_username).describe('TikTok username (e.g. nextleveldj)'),
+    limit: z.number().default(100).describe('Max videos to fetch from live scraping (max 2000)'),
+    ...sourceSchema,
+    ...dateFilterSchema,
+    ...sortSchema,
+    ...paginationSchema,
+  },
+  async ({ username, limit, source, published_after, published_before, last_n_days, sort_by, sort_order, page, page_size }) => {
+    try {
+      let videos: NormalizedVideo[];
+      let profile: Record<string, unknown> | null = null;
+      const cleanUser = username.replace('@', '');
 
-    do {
-      const params = new URLSearchParams({
-        playlistId,
-        part: "contentDetails",
-        maxResults: "50",
-      });
-      if (nextPageToken) params.set("pageToken", nextPageToken);
-
-      const page = await fetchJSON(`${YOUTUBE_BACKEND}/api/youtube/playlistItems?${params}`);
-      const ids = page.items?.map((item: any) => item.contentDetails.videoId) || [];
-      videoIds.push(...ids);
-      nextPageToken = page.nextPageToken;
-    } while (nextPageToken && videoIds.length < 5000);
-
-    // 3. Buscar detalhes dos videos em lotes de 50
-    const videos: any[] = [];
-
-    for (let i = 0; i < videoIds.length; i += 50) {
-      const batch = videoIds.slice(i, i + 50);
-      const data = await fetchJSON(
-        `${YOUTUBE_BACKEND}/api/youtube/videos?id=${batch.join(",")}&part=snippet,contentDetails,statistics`
-      );
-
-      for (const v of data.items || []) {
-        const duration = parseDuration(v.contentDetails.duration);
-        const isShort = duration <= 60;
-
-        if (type === "short" && !isShort) continue;
-        if (type === "long" && isShort) continue;
-
-        videos.push({
-          id: v.id,
-          titulo: v.snippet.title,
-          publicadoEm: v.snippet.publishedAt,
-          duracao: duration,
-          duracaoFormatada: formatDuration(duration),
-          views: Number(v.statistics.viewCount || 0),
-          likes: Number(v.statistics.likeCount || 0),
-          comentarios: Number(v.statistics.commentCount || 0),
-          isShort,
-          url: `https://youtube.com/watch?v=${v.id}`,
-        });
+      if (source === 'database') {
+        const dbData = await fetchTikTokDatabase(config);
+        videos = dbData.videos;
+        profile = { username: dbData.username, videoCount: dbData.videoCount, source: 'database' };
+      } else {
+        const liveData = await fetchTikTokLive(config, cleanUser, limit);
+        videos = liveData.videos;
+        profile = liveData.profile ? {
+          username: liveData.profile.username || cleanUser,
+          videoCount: liveData.profile.videoCount || videos.length,
+          followers: liveData.profile.followers || null,
+          source: 'live',
+        } : { username: cleanUser, videoCount: videos.length, source: 'live' };
       }
+
+      // Date filter
+      videos = applyDateFilter(videos, { published_after, published_before, last_n_days });
+
+      // Aggregates (before pagination)
+      const aggregates = computeAggregates(videos);
+
+      // Sort
+      videos = sortVideos(videos, sort_by, sort_order);
+
+      // Paginate
+      const { items, pagination } = paginate(videos, page, page_size);
+
+      const response: ToolResponse = {
+        data: { profile: profile || undefined, videos: items, aggregates, pagination },
+        meta: buildMeta('tiktok', source, 'ok'),
+        formatted_summary: formatVideoSummary(aggregates, items.length, `TikTok (@${cleanUser})`),
+      };
+
+      return toMcpResult(response);
+    } catch (err) {
+      return toMcpResult(buildErrorResponse('tiktok', 'live', err));
     }
-
-    // 4. Ordenar
-    const sortKey = {
-      views: "views",
-      likes: "likes",
-      comments: "comentarios",
-      date: "publicadoEm",
-      duration: "duracao",
-    }[sort_by] as string;
-
-    videos.sort((a, b) => {
-      const va = a[sortKey];
-      const vb = b[sortKey];
-      if (sort_order === "desc") return va > vb ? -1 : 1;
-      return va < vb ? -1 : 1;
-    });
-
-    // 5. Aplicar limite
-    const result = limit > 0 ? videos.slice(0, limit) : videos;
-
-    // 6. Calcular totais
-    const totalViews = videos.reduce((s, v) => s + v.views, 0);
-    const totalLikes = videos.reduce((s, v) => s + v.likes, 0);
-    const avgViews = videos.length ? Math.round(totalViews / videos.length) : 0;
-
-    const header = [
-      `📺 Canal: ${channel.snippet.title}`,
-      `Total de videos: ${videos.length} | Mostrando: ${result.length}`,
-      `Views totais: ${formatNumber(totalViews)} | Media: ${formatNumber(avgViews)} | Likes totais: ${formatNumber(totalLikes)}`,
-      `Filtro: ${type} | Ordenado por: ${sort_by} ${sort_order}`,
-      "---",
-    ].join("\n");
-
-    const rows = result.map(
-      (v, i) =>
-        `${i + 1}. ${v.titulo}\n   ${formatNumber(v.views)} views | ${formatNumber(v.likes)} likes | ${v.comentarios} comments | ${v.duracaoFormatada} | ${v.isShort ? "Short" : "Video"} | ${v.publicadoEm.slice(0, 10)}\n   ${v.url}`
-    );
-
-    return {
-      content: [{ type: "text", text: header + "\n" + rows.join("\n\n") }],
-    };
-  }
-);
-
-// ========== TIKTOK TOOLS ==========
-
-server.tool(
-  "tiktok_get_profile",
-  "Busca videos de um perfil do TikTok. Retorna titulo, views, duracao, data de publicacao.",
-  {
-    username: z.string().describe("Username do TikTok (ex: nextleveldj)"),
-    limit: z.number().default(100).describe("Limite de videos (max 2000)"),
   },
-  async ({ username, limit }) => {
-    const cleanUser = username.replace("@", "");
-
-    const data = await fetchJSON(`${YOUTUBE_BACKEND}/api/tiktok/profile`, {
-      method: "POST",
-      body: JSON.stringify({ username: cleanUser, limit: Math.min(limit, 2000) }),
-    });
-
-    if (!data.success) {
-      return {
-        content: [{ type: "text", text: `Erro ao buscar @${cleanUser}: ${data.error}` }],
-      };
-    }
-
-    const videos = data.videos || [];
-    const totalViews = videos.reduce((s: number, v: any) => s + (v.views || 0), 0);
-    const avgViews = videos.length ? Math.round(totalViews / videos.length) : 0;
-
-    const header = [
-      `🎵 TikTok: @${data.profile?.username || cleanUser}`,
-      `Videos: ${data.profile?.videoCount || videos.length}`,
-      `Views totais: ${formatNumber(totalViews)} | Media: ${formatNumber(avgViews)}`,
-      "---",
-    ].join("\n");
-
-    const rows = videos.map(
-      (v: any, i: number) =>
-        `${i + 1}. ${v.title || "Sem titulo"}\n   ${formatNumber(v.views || 0)} views | ${v.duration || "?"} | ${formatTikTokDate(v.uploadDate)}\n   ${v.url}`
-    );
-
-    return {
-      content: [{ type: "text", text: header + "\n" + rows.join("\n\n") }],
-    };
-  }
 );
 
-server.tool(
-  "tiktok_get_saved_videos",
-  "Retorna videos do TikTok salvos no banco de dados (perfil @nextleveldj, sincronizado previamente).",
-  {},
-  async () => {
-    const data = await fetchJSON(`${YOUTUBE_BACKEND}/api/tiktok/videos`);
-
-    if (!data.success) {
-      return {
-        content: [{ type: "text", text: `Erro: ${data.error}` }],
-      };
-    }
-
-    const videos = data.videos || [];
-    const totalViews = videos.reduce((s: number, v: any) => s + (v.views || 0), 0);
-
-    const header = [
-      `🎵 TikTok (banco): @${data.username}`,
-      `Videos salvos: ${data.videoCount}`,
-      `Views totais: ${formatNumber(totalViews)}`,
-      "---",
-    ].join("\n");
-
-    const rows = videos.map(
-      (v: any, i: number) =>
-        `${i + 1}. ${v.title || "Sem titulo"}\n   ${formatNumber(v.views || 0)} views | ${v.duration || "?"}\n   ${v.url}`
-    );
-
-    return {
-      content: [{ type: "text", text: header + "\n" + rows.join("\n\n") }],
-    };
-  }
-);
-
-// ========== INSTAGRAM TOOLS ==========
+// ========== TIKTOK: GET SAVED VIDEOS ==========
 
 server.tool(
-  "instagram_get_profile",
-  "Busca videos/reels de um perfil do Instagram. Retorna titulo, views, likes, comentarios, tipo (reel/post).",
+  'tiktok_get_saved_videos',
+  'Get TikTok videos saved in the database (previously synced). Returns normalized videos with aggregates. Supports date filtering, sorting, and pagination.',
   {
-    username: z.string().describe("Username do Instagram (ex: nextleveldj1)"),
-    limit: z.number().default(100).describe("Limite de videos (max 100)"),
+    ...dateFilterSchema,
+    ...sortSchema,
+    ...paginationSchema,
   },
-  async ({ username, limit }) => {
-    const cleanUser = username.replace("@", "");
+  async ({ published_after, published_before, last_n_days, sort_by, sort_order, page, page_size }) => {
+    try {
+      const dbData = await fetchTikTokDatabase(config);
+      let videos = dbData.videos;
 
-    const data = await fetchJSON(`${INSTAGRAM_BACKEND}/api/profile/${cleanUser}`, {
-      method: "POST",
-      body: JSON.stringify({ limit: Math.min(limit, 100) }),
-    });
+      // Date filter
+      videos = applyDateFilter(videos, { published_after, published_before, last_n_days });
 
-    if (!data.success) {
-      return {
-        content: [{ type: "text", text: `Erro ao buscar @${cleanUser}: ${data.error}` }],
+      // Aggregates
+      const aggregates = computeAggregates(videos);
+
+      // Sort
+      videos = sortVideos(videos, sort_by, sort_order);
+
+      // Paginate
+      const { items, pagination } = paginate(videos, page, page_size);
+
+      const profile = {
+        username: dbData.username,
+        videoCount: dbData.videoCount,
+        source: 'database' as const,
       };
+
+      const response: ToolResponse = {
+        data: { profile, videos: items, aggregates, pagination },
+        meta: buildMeta('tiktok', 'database', 'ok'),
+        formatted_summary: formatVideoSummary(aggregates, items.length, `TikTok DB (@${dbData.username})`),
+      };
+
+      return toMcpResult(response);
+    } catch (err) {
+      return toMcpResult(buildErrorResponse('tiktok', 'database', err));
     }
-
-    const videos = data.videos || [];
-    const totalViews = videos.reduce((s: number, v: any) => s + (v.views || 0), 0);
-    const totalLikes = videos.reduce((s: number, v: any) => s + (v.likes || 0), 0);
-    const avgViews = videos.length ? Math.round(totalViews / videos.length) : 0;
-
-    const header = [
-      `📸 Instagram: @${data.profile?.username || cleanUser}`,
-      data.profile?.fullName ? `Nome: ${data.profile.fullName}` : null,
-      data.profile?.followers ? `Seguidores: ${formatNumber(data.profile.followers)}` : null,
-      `Videos: ${videos.length}`,
-      `Views totais: ${formatNumber(totalViews)} | Media: ${formatNumber(avgViews)} | Likes totais: ${formatNumber(totalLikes)}`,
-      "---",
-    ]
-      .filter(Boolean)
-      .join("\n");
-
-    const rows = videos.map(
-      (v: any, i: number) =>
-        `${i + 1}. ${(v.title || "Sem titulo").substring(0, 80)}\n   ${formatNumber(v.views || 0)} views | ${formatNumber(v.likes || 0)} likes | ${v.comments || 0} comments | ${v.type || "post"}\n   ${v.url}`
-    );
-
-    return {
-      content: [{ type: "text", text: header + "\n" + rows.join("\n\n") }],
-    };
-  }
-);
-
-server.tool(
-  "instagram_get_saved_videos",
-  "Retorna videos do Instagram salvos no banco de dados (perfil @nextleveldj1, sincronizado previamente).",
-  {},
-  async () => {
-    const data = await fetchJSON(`${INSTAGRAM_BACKEND}/api/videos`);
-
-    const videos = data.videos || [];
-    const totalViews = videos.reduce((s: number, v: any) => s + (v.views || 0), 0);
-
-    const header = [
-      `📸 Instagram (banco): @${data.username}`,
-      `Videos salvos: ${videos.length}`,
-      `Views totais: ${formatNumber(totalViews)}`,
-      `Ultima atualizacao: ${data.lastUpdate || "desconhecido"}`,
-      "---",
-    ].join("\n");
-
-    const rows = videos.map(
-      (v: any, i: number) =>
-        `${i + 1}. ${(v.caption || v.title || "Sem titulo").substring(0, 80)}\n   ${formatNumber(v.views || 0)} views | ${formatNumber(v.likes || 0)} likes | ${v.type || "post"}`
-    );
-
-    return {
-      content: [{ type: "text", text: header + "\n" + rows.join("\n\n") }],
-    };
-  }
-);
-
-server.tool(
-  "instagram_get_comments",
-  "Busca comentarios de um post/reel do Instagram pelo shortcode.",
-  {
-    shortcode: z.string().describe("Shortcode do post (ex: ABC123def)"),
-    limit: z.number().default(500).describe("Limite de comentarios"),
   },
-  async ({ shortcode, limit }) => {
-    const data = await fetchJSON(
-      `${INSTAGRAM_BACKEND}/api/comments/${shortcode}?limit=${limit}`
-    );
-
-    if (data.error) {
-      return {
-        content: [{ type: "text", text: `Erro: ${data.error}` }],
-      };
-    }
-
-    const comments = data.comments || [];
-
-    const header = [
-      `💬 Comentarios: ${shortcode}`,
-      `Total: ${data.total_comments || "?"} | Buscados: ${data.fetched_comments || comments.length}`,
-      "---",
-    ].join("\n");
-
-    const rows = comments.map(
-      (c: any, i: number) =>
-        `${i + 1}. @${c.author}${c.author_verified ? " ✓" : ""}: ${c.text?.substring(0, 200)}\n   ${c.likes || 0} likes | ${c.answers_count || 0} respostas | ${c.timestamp || ""}`
-    );
-
-    return {
-      content: [{ type: "text", text: header + "\n" + rows.join("\n\n") }],
-    };
-  }
 );
 
-// ========== TOOL: RESUMO GERAL ==========
+// ========== INSTAGRAM: GET PROFILE ==========
 
 server.tool(
-  "social_media_overview",
-  "Retorna um resumo geral de todas as plataformas (YouTube, TikTok, Instagram) para o perfil padrao.",
+  'instagram_get_profile',
+  'Fetch videos/reels from an Instagram profile (live scraping or database). Returns normalized videos with views, likes, comments. Supports date filtering, sorting, and pagination.',
   {
-    youtube_handle: z.string().default("@nextleveldj1").describe("Handle do YouTube"),
-    tiktok_username: z.string().default("nextleveldj").describe("Username do TikTok"),
-    instagram_username: z.string().default("nextleveldj1").describe("Username do Instagram"),
+    username: z.string().default(DEFAULTS.instagram_username).describe('Instagram username (e.g. nextleveldj1)'),
+    limit: z.number().default(100).describe('Max videos to fetch from live scraping (max 100)'),
+    ...sourceSchema,
+    ...dateFilterSchema,
+    ...sortSchema,
+    ...paginationSchema,
+  },
+  async ({ username, limit, source, published_after, published_before, last_n_days, sort_by, sort_order, page, page_size }) => {
+    try {
+      let videos: NormalizedVideo[];
+      let profile: Record<string, unknown> | null = null;
+      const cleanUser = username.replace('@', '');
+
+      if (source === 'database') {
+        const dbData = await fetchInstagramDatabase(config);
+        videos = dbData.videos;
+        profile = { username: dbData.username, lastUpdate: dbData.lastUpdate, source: 'database' };
+      } else {
+        const liveData = await fetchInstagramLive(config, cleanUser, limit);
+        videos = liveData.videos;
+        profile = liveData.profile ? {
+          username: liveData.profile.username || cleanUser,
+          fullName: liveData.profile.fullName || null,
+          followers: liveData.profile.followers || null,
+          following: liveData.profile.following || null,
+          videoCount: videos.length,
+          source: 'live',
+        } : { username: cleanUser, videoCount: videos.length, source: 'live' };
+      }
+
+      // Date filter
+      videos = applyDateFilter(videos, { published_after, published_before, last_n_days });
+
+      // Aggregates
+      const aggregates = computeAggregates(videos);
+
+      // Sort
+      videos = sortVideos(videos, sort_by, sort_order);
+
+      // Paginate
+      const { items, pagination } = paginate(videos, page, page_size);
+
+      const response: ToolResponse = {
+        data: { profile: profile || undefined, videos: items, aggregates, pagination },
+        meta: buildMeta('instagram', source, 'ok'),
+        formatted_summary: formatVideoSummary(aggregates, items.length, `Instagram (@${cleanUser})`),
+      };
+
+      return toMcpResult(response);
+    } catch (err) {
+      return toMcpResult(buildErrorResponse('instagram', 'live', err));
+    }
+  },
+);
+
+// ========== INSTAGRAM: GET SAVED VIDEOS ==========
+
+server.tool(
+  'instagram_get_saved_videos',
+  'Get Instagram videos saved in the database (previously synced). Returns normalized videos with aggregates. Supports date filtering, sorting, and pagination.',
+  {
+    ...dateFilterSchema,
+    ...sortSchema,
+    ...paginationSchema,
+  },
+  async ({ published_after, published_before, last_n_days, sort_by, sort_order, page, page_size }) => {
+    try {
+      const dbData = await fetchInstagramDatabase(config);
+      let videos = dbData.videos;
+
+      // Date filter
+      videos = applyDateFilter(videos, { published_after, published_before, last_n_days });
+
+      // Aggregates
+      const aggregates = computeAggregates(videos);
+
+      // Sort
+      videos = sortVideos(videos, sort_by, sort_order);
+
+      // Paginate
+      const { items, pagination } = paginate(videos, page, page_size);
+
+      const profile = {
+        username: dbData.username,
+        lastUpdate: dbData.lastUpdate,
+        source: 'database' as const,
+      };
+
+      const response: ToolResponse = {
+        data: { profile, videos: items, aggregates, pagination },
+        meta: buildMeta('instagram', 'database', 'ok'),
+        formatted_summary: formatVideoSummary(aggregates, items.length, `Instagram DB (@${dbData.username})`),
+      };
+
+      return toMcpResult(response);
+    } catch (err) {
+      return toMcpResult(buildErrorResponse('instagram', 'database', err));
+    }
+  },
+);
+
+// ========== INSTAGRAM: GET COMMENTS ==========
+
+server.tool(
+  'instagram_get_comments',
+  'Fetch comments from an Instagram post/reel by shortcode. Returns structured comment data with pagination.',
+  {
+    shortcode: z.string().describe('Post shortcode (e.g. ABC123def)'),
+    limit: z.number().default(500).describe('Max comments to fetch'),
+    ...paginationSchema,
+  },
+  async ({ shortcode, limit, page, page_size }) => {
+    try {
+      const { comments, totalComments, fetchedComments } = await fetchInstagramComments(config, shortcode, limit);
+
+      // Paginate comments
+      const safePage = Math.max(1, page);
+      const safeSize = Math.max(1, Math.min(page_size, 200));
+      const totalPages = Math.max(1, Math.ceil(comments.length / safeSize));
+      const start = (safePage - 1) * safeSize;
+      const pageComments = comments.slice(start, start + safeSize);
+
+      const response: ToolResponse = {
+        data: {
+          comments: pageComments,
+          pagination: {
+            page: safePage,
+            page_size: safeSize,
+            total_count: comments.length,
+            total_pages: totalPages,
+            has_next: safePage < totalPages,
+          },
+        },
+        meta: buildMeta('instagram', 'live', 'ok'),
+        formatted_summary: `Instagram comments for ${shortcode}: ${fetchedComments} fetched of ${totalComments} total, showing page ${safePage}`,
+      };
+
+      return toMcpResult(response);
+    } catch (err) {
+      return toMcpResult(buildErrorResponse('instagram', 'live', err));
+    }
+  },
+);
+
+// ========== SOCIAL MEDIA OVERVIEW ==========
+
+server.tool(
+  'social_media_overview',
+  'Get a combined overview of all platforms (YouTube, TikTok, Instagram) with aggregated stats. Returns structured data per platform with profiles and aggregates.',
+  {
+    youtube_handle: z.string().default(DEFAULTS.youtube_handle).describe('YouTube handle'),
+    tiktok_username: z.string().default(DEFAULTS.tiktok_username).describe('TikTok username'),
+    instagram_username: z.string().default(DEFAULTS.instagram_username).describe('Instagram username'),
   },
   async ({ youtube_handle, tiktok_username, instagram_username }) => {
-    const results: string[] = ["📊 RESUMO GERAL - SOCIAL MEDIA", "==="];
+    const platforms: Record<string, { profile?: Record<string, unknown>; aggregates?: ReturnType<typeof computeAggregates>; error?: string }> = {};
+    const summaryParts: string[] = [];
+    let overallStatus: 'ok' | 'partial' | 'error' = 'ok';
 
-    // YouTube
-    try {
-      const cleanHandle = youtube_handle.startsWith("@") ? youtube_handle : `@${youtube_handle}`;
-      const channelData = await fetchJSON(
-        `${YOUTUBE_BACKEND}/api/youtube/channels?forHandle=${encodeURIComponent(cleanHandle)}&part=snippet,statistics`
-      );
+    // Fetch all platforms concurrently
+    const [ytResult, ttResult, igResult] = await Promise.allSettled([
+      // YouTube
+      (async () => {
+        const { channel, playlistId } = await fetchYouTubeChannel(config, youtube_handle);
+        const videos = await fetchAllYouTubeVideos(config, playlistId, youtube_handle);
+        const aggregates = computeAggregates(videos);
+        const profile = {
+          name: channel.snippet.title,
+          handle: youtube_handle,
+          subscribers: Number(channel.statistics.subscriberCount),
+          videoCount: Number(channel.statistics.videoCount),
+          totalViews: Number(channel.statistics.viewCount),
+        };
+        return { profile, aggregates };
+      })(),
+      // TikTok (from database for speed)
+      (async () => {
+        const dbData = await fetchTikTokDatabase(config);
+        const aggregates = computeAggregates(dbData.videos);
+        const profile = { username: dbData.username, videoCount: dbData.videoCount };
+        return { profile, aggregates };
+      })(),
+      // Instagram (from database for speed)
+      (async () => {
+        const dbData = await fetchInstagramDatabase(config);
+        const aggregates = computeAggregates(dbData.videos);
+        const profile = { username: dbData.username, lastUpdate: dbData.lastUpdate };
+        return { profile, aggregates };
+      })(),
+    ]);
 
-      if (channelData.items?.length) {
-        const ch = channelData.items[0];
-        results.push(
-          "",
-          `📺 YOUTUBE: ${ch.snippet.title}`,
-          `   Inscritos: ${formatNumber(Number(ch.statistics.subscriberCount))}`,
-          `   Videos: ${formatNumber(Number(ch.statistics.videoCount))}`,
-          `   Views totais: ${formatNumber(Number(ch.statistics.viewCount))}`
-        );
-      }
-    } catch (e: any) {
-      results.push("", `📺 YOUTUBE: Erro - ${e.message}`);
+    // Process YouTube
+    if (ytResult.status === 'fulfilled') {
+      platforms.youtube = ytResult.value;
+      const p = ytResult.value.profile;
+      summaryParts.push(`YouTube (${p.name}): ${formatNumber(Number(p.subscribers))} subs, ${formatNumber(ytResult.value.aggregates.total_views)} views across ${ytResult.value.aggregates.total_videos} videos`);
+    } else {
+      platforms.youtube = { error: mapErrorMessage(ytResult.reason) };
+      summaryParts.push(`YouTube: Error - ${mapErrorMessage(ytResult.reason)}`);
+      overallStatus = 'partial';
     }
 
-    // TikTok
-    try {
-      const data = await fetchJSON(`${YOUTUBE_BACKEND}/api/tiktok/videos`);
-      if (data.success) {
-        const videos = data.videos || [];
-        const totalViews = videos.reduce((s: number, v: any) => s + (v.views || 0), 0);
-        results.push(
-          "",
-          `🎵 TIKTOK: @${data.username}`,
-          `   Videos salvos: ${videos.length}`,
-          `   Views totais: ${formatNumber(totalViews)}`,
-          `   Media por video: ${formatNumber(videos.length ? Math.round(totalViews / videos.length) : 0)}`
-        );
-      }
-    } catch (e: any) {
-      results.push("", `🎵 TIKTOK: Erro - ${e.message}`);
+    // Process TikTok
+    if (ttResult.status === 'fulfilled') {
+      platforms.tiktok = ttResult.value;
+      summaryParts.push(`TikTok (@${ttResult.value.profile.username}): ${formatNumber(ttResult.value.aggregates.total_views)} views across ${ttResult.value.aggregates.total_videos} videos`);
+    } else {
+      platforms.tiktok = { error: mapErrorMessage(ttResult.reason) };
+      summaryParts.push(`TikTok: Error - ${mapErrorMessage(ttResult.reason)}`);
+      overallStatus = 'partial';
     }
 
-    // Instagram
-    try {
-      const data = await fetchJSON(`${INSTAGRAM_BACKEND}/api/videos`);
-      const videos = data.videos || [];
-      const totalViews = videos.reduce((s: number, v: any) => s + (v.views || 0), 0);
-      const totalLikes = videos.reduce((s: number, v: any) => s + (v.likes || 0), 0);
-      results.push(
-        "",
-        `📸 INSTAGRAM: @${data.username}`,
-        `   Videos salvos: ${videos.length}`,
-        `   Views totais: ${formatNumber(totalViews)}`,
-        `   Likes totais: ${formatNumber(totalLikes)}`,
-        `   Ultima atualizacao: ${data.lastUpdate || "?"}`
-      );
-    } catch (e: any) {
-      results.push("", `📸 INSTAGRAM: Erro - ${e.message}`);
+    // Process Instagram
+    if (igResult.status === 'fulfilled') {
+      platforms.instagram = igResult.value;
+      summaryParts.push(`Instagram (@${igResult.value.profile.username}): ${formatNumber(igResult.value.aggregates.total_views)} views across ${igResult.value.aggregates.total_videos} videos`);
+    } else {
+      platforms.instagram = { error: mapErrorMessage(igResult.reason) };
+      summaryParts.push(`Instagram: Error - ${mapErrorMessage(igResult.reason)}`);
+      overallStatus = 'partial';
     }
 
-    return {
-      content: [{ type: "text", text: results.join("\n") }],
+    // If all failed
+    if (ytResult.status === 'rejected' && ttResult.status === 'rejected' && igResult.status === 'rejected') {
+      overallStatus = 'error';
+    }
+
+    const response: ToolResponse = {
+      data: { platforms: platforms as Record<string, unknown> as Record<string, PlatformSummary> },
+      meta: buildMeta('all', 'live', overallStatus),
+      formatted_summary: summaryParts.join('\n'),
     };
-  }
+
+    return toMcpResult(response);
+  },
 );
 
-// ========== UTILS ==========
+// ========== CONSOLIDATED NORMALIZED TOOL ==========
 
-// Parse ISO 8601 duration (PT1H2M3S) to seconds
-function parseDuration(iso: string): number {
-  const match = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
-  if (!match) return 0;
-  const h = parseInt(match[1] || "0");
-  const m = parseInt(match[2] || "0");
-  const s = parseInt(match[3] || "0");
-  return h * 3600 + m * 60 + s;
-}
+server.tool(
+  'social_media_get_videos_normalized',
+  'Unified video search across one or all platforms. Returns normalized videos from YouTube, TikTok, and/or Instagram with combined aggregates. When platform is "all", fetches concurrently and merges results.',
+  {
+    platform: z.enum(['youtube', 'tiktok', 'instagram', 'all']).default('all').describe('Platform to fetch from'),
+    handle: z.string().optional().describe('Account handle/username (uses platform defaults if omitted)'),
+    ...dateFilterSchema,
+    limit: z.number().default(50).describe('Max videos per platform for live fetch'),
+    ...sortSchema,
+    source: z.enum(['live', 'database']).default('live').describe("Data source: 'live' or 'database'"),
+    ...paginationSchema,
+  },
+  async ({ platform, handle, published_after, published_before, last_n_days, limit, sort_by, sort_order, source, page, page_size }) => {
+    const platformsToFetch = platform === 'all'
+      ? ['youtube', 'tiktok', 'instagram'] as const
+      : [platform] as const;
 
-// Format YYYYMMDD to DD/MM/YYYY
-function formatTikTokDate(dateStr: string): string {
-  if (!dateStr || dateStr.length < 8) return dateStr || "";
-  return `${dateStr.slice(6, 8)}/${dateStr.slice(4, 6)}/${dateStr.slice(0, 4)}`;
-}
+    const dateFilter = { published_after, published_before, last_n_days };
+    const perPlatformStatus: Record<string, { status: 'ok' | 'error'; error?: string }> = {};
+
+    // Fetch each platform
+    const fetchPromises = platformsToFetch.map(async (p) => {
+      try {
+        let videos: NormalizedVideo[] = [];
+
+        switch (p) {
+          case 'youtube': {
+            const ytHandle = handle || DEFAULTS.youtube_handle;
+            const { playlistId } = await fetchYouTubeChannel(config, ytHandle);
+            videos = await fetchAllYouTubeVideos(config, playlistId, ytHandle);
+            break;
+          }
+          case 'tiktok': {
+            const ttUser = handle || DEFAULTS.tiktok_username;
+            if (source === 'database') {
+              const db = await fetchTikTokDatabase(config);
+              videos = db.videos;
+            } else {
+              const live = await fetchTikTokLive(config, ttUser, limit);
+              videos = live.videos;
+            }
+            break;
+          }
+          case 'instagram': {
+            const igUser = handle || DEFAULTS.instagram_username;
+            if (source === 'database') {
+              const db = await fetchInstagramDatabase(config);
+              videos = db.videos;
+            } else {
+              const live = await fetchInstagramLive(config, igUser, limit);
+              videos = live.videos;
+            }
+            break;
+          }
+        }
+
+        perPlatformStatus[p] = { status: 'ok' };
+        return videos;
+      } catch (err) {
+        perPlatformStatus[p] = { status: 'error', error: mapErrorMessage(err) };
+        return [] as NormalizedVideo[];
+      }
+    });
+
+    const results = await Promise.allSettled(fetchPromises);
+    let allVideos: NormalizedVideo[] = [];
+
+    for (const r of results) {
+      if (r.status === 'fulfilled') {
+        allVideos.push(...r.value);
+      }
+    }
+
+    // Date filter
+    allVideos = applyDateFilter(allVideos, dateFilter);
+
+    // Aggregates (before pagination)
+    const aggregates = computeAggregates(allVideos);
+
+    // Sort
+    allVideos = sortVideos(allVideos, sort_by, sort_order);
+
+    // Paginate
+    const { items, pagination } = paginate(allVideos, page, page_size);
+
+    // Determine overall status
+    const statuses = Object.values(perPlatformStatus);
+    const allOk = statuses.every(s => s.status === 'ok');
+    const allError = statuses.every(s => s.status === 'error');
+    const overallStatus: 'ok' | 'partial' | 'error' = allOk ? 'ok' : allError ? 'error' : 'partial';
+
+    const response: ToolResponse = {
+      data: {
+        videos: items,
+        aggregates,
+        pagination,
+        platforms: perPlatformStatus as unknown as Record<string, PlatformSummary>,
+      },
+      meta: buildMeta(platform, source, overallStatus),
+      formatted_summary: formatVideoSummary(aggregates, items.length, `Normalized (${platform})`),
+    };
+
+    return toMcpResult(response);
+  },
+);
+
+// ========== PERFORMANCE SUMMARY TOOL ==========
+
+server.tool(
+  'social_media_get_performance_summary',
+  'Get a detailed performance summary for one or all platforms over a time period. Includes total stats, averages, medians, top/bottom videos, posting frequency, and views trend.',
+  {
+    platform: z.enum(['youtube', 'tiktok', 'instagram', 'all']).default('all').describe('Platform to analyze'),
+    handle: z.string().optional().describe('Account handle/username (uses platform defaults if omitted)'),
+    days: z.number().default(90).describe('Number of days to analyze (default 90)'),
+  },
+  async ({ platform, handle, days }) => {
+    const platformsToFetch = platform === 'all'
+      ? ['youtube', 'tiktok', 'instagram'] as const
+      : [platform] as const;
+
+    const dateFilter = { last_n_days: days };
+    const platformResults: Record<string, PlatformSummary> = {};
+    const allVideos: NormalizedVideo[] = [];
+
+    const fetchPromises = platformsToFetch.map(async (p) => {
+      try {
+        let videos: NormalizedVideo[] = [];
+
+        switch (p) {
+          case 'youtube': {
+            const ytHandle = handle || DEFAULTS.youtube_handle;
+            const { playlistId } = await fetchYouTubeChannel(config, ytHandle);
+            videos = await fetchAllYouTubeVideos(config, playlistId, ytHandle);
+            break;
+          }
+          case 'tiktok': {
+            const ttUser = handle || DEFAULTS.tiktok_username;
+            const db = await fetchTikTokDatabase(config);
+            videos = db.videos;
+            break;
+          }
+          case 'instagram': {
+            const igUser = handle || DEFAULTS.instagram_username;
+            const db = await fetchInstagramDatabase(config);
+            videos = db.videos;
+            break;
+          }
+        }
+
+        // Apply date filter
+        videos = applyDateFilter(videos, dateFilter);
+
+        const summary = computePerformanceSummary(videos);
+        platformResults[p] = {
+          ...summary,
+          platform: p,
+          source_status: 'ok',
+        };
+        allVideos.push(...videos);
+      } catch (err) {
+        platformResults[p] = {
+          platform: p,
+          source_status: 'error',
+          error: mapErrorMessage(err),
+          total_videos: 0,
+          total_views: 0,
+          total_likes: 0,
+          total_comments: 0,
+          avg_views: 0,
+          median_views: 0,
+          top_10_videos: [],
+          bottom_10_videos: [],
+          shorts_count: 0,
+          shorts_ratio: 0,
+          posting_frequency: { posts_per_week: 0 },
+          views_trend: { first_half_avg: 0, second_half_avg: 0, direction: 'stable' },
+        };
+      }
+    });
+
+    await Promise.allSettled(fetchPromises);
+
+    // Combined summary
+    const combined = computePerformanceSummary(allVideos);
+
+    // Overall status
+    const statuses = Object.values(platformResults).map(p => p.source_status);
+    const allOk = statuses.every(s => s === 'ok');
+    const allError = statuses.every(s => s === 'error');
+    const overallStatus: 'ok' | 'partial' | 'error' = allOk ? 'ok' : allError ? 'error' : 'partial';
+
+    // Summary text
+    const summaryParts: string[] = [`Performance summary (last ${days} days)`];
+    for (const [p, data] of Object.entries(platformResults)) {
+      if (data.source_status === 'ok') {
+        summaryParts.push(
+          `${p}: ${data.total_videos} videos, ${formatNumber(data.total_views)} views, ${formatNumber(data.avg_views)} avg, trend: ${data.views_trend.direction}, ${data.posting_frequency.posts_per_week} posts/wk`,
+        );
+      } else {
+        summaryParts.push(`${p}: Error - ${data.error}`);
+      }
+    }
+    if (platform === 'all') {
+      summaryParts.push(
+        `Combined: ${combined.total_videos} videos, ${formatNumber(combined.total_views)} views, ${formatNumber(combined.avg_views)} avg, trend: ${combined.views_trend.direction}`,
+      );
+    }
+
+    const response: ToolResponse = {
+      data: {
+        platforms: platformResults,
+        combined,
+      },
+      meta: buildMeta(platform, 'live', overallStatus),
+      formatted_summary: summaryParts.join('\n'),
+    };
+
+    return toMcpResult(response);
+  },
+);
 
 // ========== START ==========
 
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("[MCP] Social Media Data server running on stdio");
+  console.error('[MCP] Social Media Data server v2.0.0 running on stdio');
 }
 
 main().catch((err) => {
-  console.error("[MCP] Fatal error:", err);
+  console.error('[MCP] Fatal error:', err);
   process.exit(1);
 });
