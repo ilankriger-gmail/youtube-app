@@ -143,23 +143,27 @@ const Download = {
     this.renderQueue();
 
     try {
-      // Usa download direto se tiver video_url (mais rapido e confiavel)
-      // Caso contrario usa yt-dlp
-      let downloadUrl;
+      // URLs de CDN do Instagram expiram. Tenta a URL direta primeiro e,
+      // se ela falhar, usa yt-dlp para obter uma URL nova a partir do post.
       if (item.video.video_url) {
-        downloadUrl = getDirectDownloadUrl(item.video.video_url, item.filename);
+        try {
+          await this.downloadFile(
+            getDirectDownloadUrl(item.video.video_url, item.filename),
+            item.filename
+          );
+        } catch (directError) {
+          console.warn('URL direta indisponivel; tentando yt-dlp:', directError.message);
+          await this.downloadFile(
+            getDownloadUrl(item.video.url, quality, item.filename),
+            item.filename
+          );
+        }
       } else {
-        downloadUrl = getDownloadUrl(item.video.url, quality, item.filename);
+        await this.downloadFile(
+          getDownloadUrl(item.video.url, quality, item.filename),
+          item.filename
+        );
       }
-
-      // Cria link de download
-      const link = document.createElement('a');
-      link.href = downloadUrl;
-      link.download = item.filename;
-      link.style.display = 'none';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
 
       item.status = 'completed';
     } catch (error) {
@@ -175,6 +179,40 @@ const Download = {
 
     this.renderQueue();
     this.updateProgress();
+  },
+
+  /**
+   * Baixa um arquivo e só conclui a fila se o servidor realmente respondeu
+   * com sucesso. Isso também permite tratar erros 403 da CDN do Instagram.
+   */
+  async downloadFile(url, filename) {
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      let message = `Erro no download (${response.status})`;
+      try {
+        const body = await response.json();
+        message = body.error || body.details || message;
+      } catch (_) {
+        // Algumas respostas de erro não são JSON.
+      }
+      throw new Error(message);
+    }
+
+    const blob = await response.blob();
+    if (blob.size === 0) {
+      throw new Error('O servidor retornou um arquivo vazio');
+    }
+
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = filename;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(objectUrl);
   },
 
   /**
